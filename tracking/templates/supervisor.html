@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Inspector Dashboard with Geofencing</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+      }
+      .layout {
+        display: flex;
+        height: 100vh;
+      }
+
+      /* Sidebar */
+      #sidebar {
+        width: 280px;
+        border-left: 1px solid #ddd;
+        padding: 10px;
+        overflow-y: auto;
+        background: #f9f9f9;
+      }
+      .inspector-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 6px 8px;
+        margin-bottom: 8px;
+        background: white;
+        cursor: pointer;
+      }
+      .inspector-card.active {
+        background: #eef2ff;
+        border: 2px solid #4f46e5;
+      }
+      .inspector-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background-size: cover;
+        background-position: center;
+      }
+      .status {
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .assigned {
+        background: #e6ffed;
+        color: #1a7f37;
+        border: 1px solid #1a7f37;
+      }
+      .unassigned {
+        background: #ffeaea;
+        color: #b91c1c;
+        border: 1px solid #b91c1c;
+      }
+
+      /* Map container */
+      #map {
+        flex: 1;
+      }
+    </style>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE"></script>
+  </head>
+  <body>
+    <div class="layout">
+      <div id="map"></div>
+      <div id="sidebar">
+        <h3>Inspectors</h3>
+        <div id="inspector-list"></div>
+      </div>
+    </div>
+
+    <script>
+      let map, infoWindow;
+      let markers = {}; // inspectorId -> marker
+      let circles = {}; // inspectorId -> circle
+      let activeInspector = null;
+
+      async function initMap() {
+        map = new google.maps.Map(document.getElementById("map"), {
+          center: { lat: 25.2532, lng: 55.3657 }, // Dubai Airport
+          zoom: 16,
+        });
+
+        infoWindow = new google.maps.InfoWindow();
+
+        // Click map to place inspector
+        map.addListener("click", (e) => {
+          if (activeInspector) {
+            saveAndPlace(
+              activeInspector.id,
+              activeInspector.name,
+              e.latLng.lat(),
+              e.latLng.lng(),
+              activeInspector.avatar,
+              activeInspector.radius || 100
+            );
+            clearActive();
+          }
+        });
+
+        loadInspectors();
+      }
+
+      async function loadInspectors() {
+        const res = await fetch("/api/inspections/");
+        const data = await res.json();
+
+        const list = document.getElementById("inspector-list");
+        list.innerHTML = "";
+
+        for (const [id, ins] of Object.entries(data)) {
+          const card = document.createElement("div");
+          card.className = "inspector-card";
+          card.dataset.id = id;
+          card.innerHTML = `
+            <div class="inspector-info">
+              <div class="avatar" style="background-image:url('https://i.pravatar.cc/150?u=${id}')"></div>
+              <div>
+                <div>${ins.title}</div>
+                <small>ID: ${id}</small>
+              </div>
+            </div>
+            <span class="status ${ins.lat ? "assigned" : "unassigned"}">
+              ${ins.lat ? "Assigned" : "Unassigned"}
+            </span>
+          `;
+
+          card.onclick = () =>
+            selectInspector(
+              id,
+              ins.title,
+              `https://i.pravatar.cc/150?u=${id}`,
+              ins.radius || 100,
+              card
+            );
+
+          list.appendChild(card);
+
+          // If already assigned, place marker + geofence
+          if (ins.lat && ins.lng) {
+            upsertMarker(
+              id,
+              ins.title,
+              ins.lat,
+              ins.lng,
+              `https://i.pravatar.cc/150?u=${id}`,
+              ins.radius || 100
+            );
+          }
+        }
+      }
+
+      function selectInspector(id, name, avatar, radius, cardEl) {
+        document
+          .querySelectorAll(".inspector-card")
+          .forEach((c) => c.classList.remove("active"));
+        cardEl.classList.add("active");
+        activeInspector = { id, name, avatar, radius };
+      }
+
+      function clearActive() {
+        activeInspector = null;
+        document
+          .querySelectorAll(".inspector-card")
+          .forEach((c) => c.classList.remove("active"));
+      }
+
+      async function saveAndPlace(id, name, lat, lng, avatar, radius) {
+        await fetch("/api/inspection-update/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inspection_id: id,
+            latitude: lat,
+            longitude: lng,
+            radius: radius,
+          }),
+        });
+        upsertMarker(id, name, lat, lng, avatar, radius);
+        loadInspectors();
+      }
+
+      function upsertMarker(id, name, lat, lng, avatar, radius) {
+        // Marker
+        if (!markers[id]) {
+          const m = new google.maps.Marker({
+            position: { lat, lng },
+            map,
+            draggable: true,
+            icon: {
+              url: `https://i.pravatar.cc/40?u=${id}`,
+              scaledSize: new google.maps.Size(40, 40),
+            },
+          });
+
+          m.addListener("dragend", (e) => {
+            saveAndPlace(
+              id,
+              name,
+              e.latLng.lat(),
+              e.latLng.lng(),
+              avatar,
+              radius
+            );
+          });
+
+          m.addListener("click", () => {
+            infoWindow.setContent(`
+              <div>
+                <div><b>${name}</b></div>
+                <div>ID: ${id}</div>
+                <div>Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}</div>
+                <div>Radius: ${radius}m</div>
+              </div>
+            `);
+            infoWindow.open(map, m);
+          });
+
+          markers[id] = m;
+        } else {
+          markers[id].setPosition({ lat, lng });
+        }
+
+        // Geofence circle
+        if (circles[id]) {
+          circles[id].setMap(null);
+        }
+        circles[id] = new google.maps.Circle({
+          strokeColor: "#4f46e5",
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          fillColor: "#6366f1",
+          fillOpacity: 0.1,
+          map,
+          center: { lat, lng },
+          radius: radius,
+        });
+      }
+
+      window.onload = initMap;
+    </script>
+  </body>
+</html>
