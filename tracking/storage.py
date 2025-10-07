@@ -44,16 +44,33 @@ class GeofenceStore:
     def __init__(self):
         # Example dummy geofences
         self.geofences = {
-            "1": {"name": "Gate A Circle", "type": "circle", "lat": 25.2535, "lng": 55.3650, "radius": 100},
-            "2": {"name": "Runway Zone", "type": "polygon", "coords": [
-                {"lat": 25.2530, "lng": 55.3645},
-                {"lat": 25.2538, "lng": 55.3645},
-                {"lat": 25.2538, "lng": 55.3660},
-                {"lat": 25.2530, "lng": 55.3660}
-            ]}
+            
         }
 
     def get_all(self):
         return self.geofences
 
 geofence_store = GeofenceStore()
+
+class ZoneStore:
+    def __init__(self):
+        self.zones = {}
+        self.assignments = {}  # { zone_id: inspector_id }
+
+    def get_all_zones(self):
+        return self.zones
+
+    def add_zone(self, zone_id, zone_data):
+        self.zones[zone_id] = zone_data
+
+    def assign_inspector(self, zone_id, inspector_id):
+        if zone_id in self.zones:
+            self.assignments[zone_id] = inspector_id
+            return True
+        return False
+
+    def get_assignments(self):
+        return self.assignments
+
+
+zone_store = ZoneStore()

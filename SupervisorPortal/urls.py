@@ -23,7 +23,12 @@ from tracking.views import (
     InspectionListView,
     InspectionUpdateLocationView,
     GeofenceListView,
-    InspectorAssignmentView
+    InspectorAssignmentView,
+    ZoneListView,
+    ZoneCreateView,
+    map_designer,
+    ZoneAssignmentsListView,
+    ZoneAssignView,
 )
 
 urlpatterns = [
@@ -35,5 +40,10 @@ urlpatterns = [
     path("api/inspection-update/", InspectionUpdateLocationView.as_view(), name="inspection_update"),
     path("api/assignment/<str:inspector_id>/", InspectorAssignmentView.as_view()),
     path("dashboard/", map_view, name="map"),
+    path("api/zones/", ZoneListView.as_view(), name="zones"),
+    path("api/zones/create/", ZoneCreateView.as_view(), name="zone-create"),
+    path("map-designer/", map_designer, name="map-designer"),
+    path("api/zone-assignments/", ZoneAssignmentsListView.as_view(), name="zone-assignments"),
+    path("api/zone-assign/", ZoneAssignView.as_view(), name="zone-assign"),
 ]
 

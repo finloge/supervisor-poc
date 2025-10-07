@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Inspector Dashboard with Geofencing</title>
+    <title>Supervisor Dashboard - Zone Assignment</title>
     <style>
       body {
         margin: 0;
@@ -12,7 +12,6 @@
         display: flex;
         height: 100vh;
       }
-
       /* Sidebar */
       #sidebar {
         width: 280px;
@@ -23,11 +22,10 @@
       }
       .inspector-card {
         display: flex;
-        align-items: center;
-        justify-content: space-between;
+        flex-direction: column;
         border: 1px solid #ddd;
         border-radius: 8px;
-        padding: 6px 8px;
+        padding: 8px;
         margin-bottom: 8px;
         background: white;
         cursor: pointer;
@@ -35,6 +33,11 @@
       .inspector-card.active {
         background: #eef2ff;
         border: 2px solid #4f46e5;
+      }
+      .inspector-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
       }
       .inspector-info {
         display: flex;
@@ -63,14 +66,23 @@
         color: #b91c1c;
         border: 1px solid #b91c1c;
       }
-
-      /* Map container */
+      .zone-name {
+        font-size: 13px;
+        color: #374151;
+        background: #f3f4f6;
+        border-radius: 6px;
+        padding: 3px 6px;
+        margin-top: 6px;
+        text-align: center;
+      }
       #map {
         flex: 1;
       }
     </style>
+
     <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE"></script>
   </head>
+
   <body>
     <div class="layout">
       <div id="map"></div>
@@ -82,58 +94,60 @@
 
     <script>
       let map, infoWindow;
-      let markers = {}; // inspectorId -> marker
-      let circles = {}; // inspectorId -> circle
+      let markers = {};
+      let circles = {};
+      let zones = {};
+      let zoneData = {};
       let activeInspector = null;
+      let zoneAssignments = {};
 
       async function initMap() {
         map = new google.maps.Map(document.getElementById("map"), {
-          center: { lat: 25.2532, lng: 55.3657 }, // Dubai Airport
+          center: { lat: 25.2532, lng: 55.3657 },
           zoom: 16,
+          mapTypeId: google.maps.MapTypeId.SATELLITE,
         });
-
         infoWindow = new google.maps.InfoWindow();
 
-        // Click map to place inspector
-        map.addListener("click", (e) => {
-          if (activeInspector) {
-            saveAndPlace(
-              activeInspector.id,
-              activeInspector.name,
-              e.latLng.lat(),
-              e.latLng.lng(),
-              activeInspector.avatar,
-              activeInspector.radius || 100
-            );
-            clearActive();
-          }
-        });
-
-        loadInspectors();
+        await loadZones();
+        await loadZoneAssignments();
+        await loadInspectors();
       }
 
+      /** Fetch current zone assignments */
+      async function loadZoneAssignments() {
+        const res = await fetch("/api/zone-assignments/");
+        zoneAssignments = await res.json();
+      }
+
+      /** Load inspectors into sidebar */
       async function loadInspectors() {
         const res = await fetch("/api/inspections/");
         const data = await res.json();
-
         const list = document.getElementById("inspector-list");
         list.innerHTML = "";
 
         for (const [id, ins] of Object.entries(data)) {
+          const assignedZone = zoneAssignments[id] || null;
           const card = document.createElement("div");
           card.className = "inspector-card";
           card.dataset.id = id;
           card.innerHTML = `
-            <div class="inspector-info">
-              <div class="avatar" style="background-image:url('https://i.pravatar.cc/150?u=${id}')"></div>
-              <div>
-                <div>${ins.title}</div>
-                <small>ID: ${id}</small>
+            <div class="inspector-header">
+              <div class="inspector-info">
+                <div class="avatar" style="background-image:url('https://i.pravatar.cc/150?u=${id}')"></div>
+                <div>
+                  <div><strong>${ins.title}</strong></div>
+                  <small>ID: ${id}</small>
+                </div>
               </div>
+              <span class="status ${ins.lat ? "assigned" : "unassigned"}">
+                ${ins.lat ? "Assigned" : "Unassigned"}
+              </span>
             </div>
-            <span class="status ${ins.lat ? "assigned" : "unassigned"}">
-              ${ins.lat ? "Assigned" : "Unassigned"}
-            </span>
+            <div class="zone-name">
+              ${assignedZone ? "📍 " + assignedZone : "— No Zone Assigned —"}
+            </div>
           `;
 
           card.onclick = () =>
@@ -144,10 +158,9 @@
               ins.radius || 100,
               card
             );
-
           list.appendChild(card);
 
-          // If already assigned, place marker + geofence
+          // Place assigned marker if inspector has location
           if (ins.lat && ins.lng) {
             upsertMarker(
               id,
@@ -158,6 +171,53 @@
               ins.radius || 100
             );
           }
+        }
+      }
+
+      /** Load all zones and make clickable */
+      async function loadZones() {
+        const res = await fetch("/api/zones/");
+        zoneData = await res.json();
+
+        for (const [id, zone] of Object.entries(zoneData)) {
+          const polygon = new google.maps.Polygon({
+            paths: zone.coordinates,
+            strokeColor: "#4f46e5",
+            strokeOpacity: 0.9,
+            strokeWeight: 2,
+            fillColor: "#818cf8",
+            fillOpacity: 0.15,
+            map,
+          });
+
+          zones[id] = polygon;
+
+          polygon.addListener("click", async (e) => {
+            if (activeInspector) {
+              const center = getPolygonCenter(zone.coordinates);
+              await assignInspectorToZone(
+                activeInspector.id,
+                id,
+                center.lat,
+                center.lng
+              );
+              clearActive();
+              highlightZone(polygon, "#22c55e");
+              await loadZoneAssignments();
+              await loadInspectors();
+            } else {
+              infoWindow.setContent(`<b>${zone.name}</b>`);
+              infoWindow.setPosition(e.latLng);
+              infoWindow.open(map);
+            }
+          });
+
+          polygon.addListener("mouseover", () =>
+            polygon.setOptions({ fillColor: "#a5b4fc" })
+          );
+          polygon.addListener("mouseout", () =>
+            polygon.setOptions({ fillColor: "#818cf8" })
+          );
         }
       }
 
@@ -176,23 +236,44 @@
           .forEach((c) => c.classList.remove("active"));
       }
 
-      async function saveAndPlace(id, name, lat, lng, avatar, radius) {
-        await fetch("/api/inspection-update/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            inspection_id: id,
-            latitude: lat,
-            longitude: lng,
-            radius: radius,
-          }),
-        });
-        upsertMarker(id, name, lat, lng, avatar, radius);
-        loadInspectors();
+      async function assignInspectorToZone(inspectorId, zoneId, lat, lng) {
+        try {
+          await fetch("/api/zone-assign/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              zone_id: zoneId,
+              inspector_id: inspectorId,
+            }),
+          });
+
+          await fetch("/api/inspection-update/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              inspection_id: inspectorId,
+              latitude: lat,
+              longitude: lng,
+              radius: 100,
+            }),
+          });
+
+          upsertMarker(
+            inspectorId,
+            "Inspector",
+            lat,
+            lng,
+            `https://i.pravatar.cc/150?u=${inspectorId}`,
+            100
+          );
+          alert("✅ Inspector assigned to zone successfully!");
+        } catch (err) {
+          console.error(err);
+          alert("❌ Error assigning inspector.");
+        }
       }
 
       function upsertMarker(id, name, lat, lng, avatar, radius) {
-        // Marker
         if (!markers[id]) {
           const m = new google.maps.Marker({
             position: { lat, lng },
@@ -203,7 +284,6 @@
               scaledSize: new google.maps.Size(40, 40),
             },
           });
-
           m.addListener("dragend", (e) => {
             saveAndPlace(
               id,
@@ -214,28 +294,12 @@
               radius
             );
           });
-
-          m.addListener("click", () => {
-            infoWindow.setContent(`
-              <div>
-                <div><b>${name}</b></div>
-                <div>ID: ${id}</div>
-                <div>Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}</div>
-                <div>Radius: ${radius}m</div>
-              </div>
-            `);
-            infoWindow.open(map, m);
-          });
-
           markers[id] = m;
         } else {
           markers[id].setPosition({ lat, lng });
         }
 
-        // Geofence circle
-        if (circles[id]) {
-          circles[id].setMap(null);
-        }
+        if (circles[id]) circles[id].setMap(null);
         circles[id] = new google.maps.Circle({
           strokeColor: "#4f46e5",
           strokeOpacity: 0.8,
@@ -244,8 +308,39 @@
           fillOpacity: 0.1,
           map,
           center: { lat, lng },
-          radius: radius,
+          radius,
         });
+      }
+
+      async function saveAndPlace(id, name, lat, lng, avatar, radius) {
+        await fetch("/api/inspection-update/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inspection_id: id,
+            latitude: lat,
+            longitude: lng,
+            radius,
+          }),
+        });
+        upsertMarker(id, name, lat, lng, avatar, radius);
+      }
+
+      function getPolygonCenter(coords) {
+        let latSum = 0,
+          lngSum = 0;
+        coords.forEach((c) => {
+          latSum += c.lat;
+          lngSum += c.lng;
+        });
+        return {
+          lat: latSum / coords.length,
+          lng: lngSum / coords.length,
+        };
+      }
+
+      function highlightZone(zone, color) {
+        zone.setOptions({ fillColor: color, fillOpacity: 0.25 });
       }
 
       window.onload = initMap;

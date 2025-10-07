@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Airport Map Designer</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE&libraries=drawing"></script>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+      }
+      #map {
+        height: 100vh;
+        width: 100%;
+      }
+      #panel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 10px;
+        box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
+        z-index: 5;
+        width: 250px;
+      }
+      input,
+      button {
+        width: 100%;
+        padding: 6px;
+        margin: 5px 0;
+        border-radius: 5px;
+        border: 1px solid #ccc;
+      }
+      button {
+        background-color: #4f46e5;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #3730a3;
+      }
+      h3 {
+        margin-top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <h3>✈️ Airport Map Designer</h3>
+      <input
+        type="text"
+        id="zoneName"
+        placeholder="Zone Name (e.g., Immigration Gate)"
+      />
+      <button id="saveZone">💾 Save Zone</button>
+      <hr />
+      <button id="loadZones">🔄 Load Saved Zones</button>
+      <p>
+        <small>Use polygon or circle tool to draw a zone, then save.</small>
+      </p>
+    </div>
+    <div id="map"></div>
+
+    <script>
+      let map,
+        drawingManager,
+        activeShape = null;
+
+      function initMap() {
+        map = new google.maps.Map(document.getElementById("map"), {
+          center: { lat: 25.2532, lng: 55.3657 }, // Dubai Airport
+          zoom: 17,
+        });
+
+        drawingManager = new google.maps.drawing.DrawingManager({
+          drawingMode: google.maps.drawing.OverlayType.POLYGON,
+          drawingControl: true,
+          drawingControlOptions: {
+            position: google.maps.ControlPosition.TOP_CENTER,
+            drawingModes: ["polygon", "circle"],
+          },
+        });
+        drawingManager.setMap(map);
+
+        google.maps.event.addListener(
+          drawingManager,
+          "overlaycomplete",
+          (event) => {
+            if (activeShape) activeShape.setMap(null);
+            activeShape = event.overlay;
+            drawingManager.setDrawingMode(null);
+          }
+        );
+
+        document.getElementById("saveZone").onclick = saveZone;
+        document.getElementById("loadZones").onclick = loadZones;
+      }
+
+      async function saveZone() {
+        if (!activeShape) {
+          alert("Please draw a zone first!");
+          return;
+        }
+
+        const name = document.getElementById("zoneName").value.trim();
+        if (!name) {
+          alert("Please enter a zone name.");
+          return;
+        }
+
+        let shapeType, coordinates;
+
+        if (activeShape instanceof google.maps.Polygon) {
+          shapeType = "polygon";
+          coordinates = activeShape
+            .getPath()
+            .getArray()
+            .map((p) => ({
+              lat: p.lat(),
+              lng: p.lng(),
+            }));
+        } else if (activeShape instanceof google.maps.Circle) {
+          shapeType = "circle";
+          coordinates = {
+            center: {
+              lat: activeShape.getCenter().lat(),
+              lng: activeShape.getCenter().lng(),
+            },
+            radius: activeShape.getRadius(),
+          };
+        }
+
+        try {
+          const res = await fetch("/api/zones/create/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, type: shapeType, coordinates }),
+          });
+          if (res.ok) {
+            alert("✅ Zone saved successfully!");
+            activeShape.setOptions({ fillColor: "#4f46e5", fillOpacity: 0.3 });
+          } else {
+            const text = await res.text();
+            alert("❌ Error saving zone: " + text);
+          }
+        } catch (err) {
+          console.error("Save error:", err);
+          alert("❌ Could not save zone. Check backend connection.");
+        }
+      }
+
+      async function loadZones() {
+        try {
+          const res = await fetch("/api/zones/");
+          const zones = await res.json();
+
+          Object.values(zones).forEach((zone) => {
+            if (zone.type === "polygon") {
+              new google.maps.Polygon({
+                paths: zone.coordinates,
+                strokeColor: "#22c55e",
+                strokeOpacity: 0.9,
+                strokeWeight: 2,
+                fillColor: "#22c55e",
+                fillOpacity: 0.2,
+                map,
+              });
+            } else if (zone.type === "circle") {
+              new google.maps.Circle({
+                center: zone.coordinates.center,
+                radius: zone.coordinates.radius,
+                strokeColor: "#22c55e",
+                strokeOpacity: 0.9,
+                strokeWeight: 2,
+                fillColor: "#22c55e",
+                fillOpacity: 0.2,
+                map,
+              });
+            }
+          });
+
+          alert("✅ Loaded " + Object.keys(zones).length + " zones");
+        } catch (err) {
+          console.error("Load zones error:", err);
+        }
+      }
+
+      window.onload = initMap;
+    </script>
+  </body>
+</html>

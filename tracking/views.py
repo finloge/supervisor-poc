@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .storage import location_store, inspection_store, geofence_store
+from .storage import location_store, inspection_store, geofence_store, zone_store
 from django.shortcuts import render
 
 
@@ -72,3 +72,50 @@ class InspectorAssignmentView(APIView):
 def map_view(request):
     return render(request, "supervisor.html")
 
+class ZoneListView(APIView):
+    def get(self, request):
+        return Response(zone_store.get_all_zones(), status=status.HTTP_200_OK)
+    
+class ZoneCreateView(APIView):
+    def post(self, request):
+        name = request.data.get("name")
+        coords = request.data.get("coordinates")
+
+        if not name or not coords:
+            return Response({"error": "Missing name or coordinates"}, status=status.HTTP_400_BAD_REQUEST)
+
+        new_id = str(len(zone_store.zones) + 1)
+        zone_store.zones[new_id] = {
+            "name": name,
+            "type": "polygon",
+            "coordinates": coords,
+        }
+
+        return Response({"message": "Zone saved", "zone": zone_store.zones[new_id]}, status=status.HTTP_201_CREATED)
+    
+def map_designer(request):
+    return render(request, "map.html")
+
+class ZoneAssignmentsListView(APIView):
+    def get(self, request):
+        assignments = zone_store.get_assignments()
+        detailed = {}
+        for zone_id, inspector_id in assignments.items():
+            zone = zone_store.zones.get(zone_id)
+            if zone:
+                detailed[inspector_id] = zone["name"]
+        return Response(detailed, status=status.HTTP_200_OK)
+    
+class ZoneAssignView(APIView):
+    def post(self, request):
+        zone_id = request.data.get("zone_id")
+        inspector_id = request.data.get("inspector_id")
+
+        if not zone_id or not inspector_id:
+            return Response({"error": "Missing zone_id or inspector_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+        success = zone_store.assign_inspector(zone_id, inspector_id)
+        if success:
+            return Response({"message": "Inspector assigned successfully"}, status=status.HTTP_200_OK)
+        else:
+            return Response({"error": "Zone not found"}, status=status.HTTP_404_NOT_FOUND)
