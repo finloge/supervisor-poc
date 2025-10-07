@@ -2,76 +2,130 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Airport Map Designer</title>
+    <title>Airport Map Designer – Multi-Level with Legends</title>
+
     <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE&libraries=drawing"></script>
+
     <style>
       body {
         margin: 0;
         font-family: Arial, sans-serif;
+        overflow: hidden;
       }
+
       #map {
         height: 100vh;
         width: 100%;
       }
+
       #panel {
         position: absolute;
         top: 10px;
         left: 10px;
         background: white;
-        padding: 10px;
+        padding: 12px;
         border-radius: 10px;
         box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
         z-index: 5;
-        width: 250px;
+        width: 280px;
       }
+
       input,
-      button {
+      button,
+      select {
         width: 100%;
         padding: 6px;
         margin: 5px 0;
         border-radius: 5px;
         border: 1px solid #ccc;
       }
+
       button {
         background-color: #4f46e5;
         color: white;
         border: none;
         cursor: pointer;
       }
+
       button:hover {
         background-color: #3730a3;
       }
-      h3 {
-        margin-top: 0;
+
+      #legend {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        z-index: 5;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+
+      .legend-color {
+        width: 20px;
+        height: 20px;
+        margin-right: 8px;
+        border-radius: 3px;
+      }
+
+      small {
+        color: #666;
       }
     </style>
   </head>
+
   <body>
     <div id="panel">
-      <h3>✈️ Airport Map Designer</h3>
+      <h3>🗺️ Airport Map Designer</h3>
+
+      <label for="levelSelect">Select Level:</label>
+      <select id="levelSelect">
+        <option value="L1">Level 1 – Arrivals</option>
+        <option value="L2">Level 2 – Departures</option>
+        <option value="L3">Level 3 – Customs</option>
+      </select>
+
       <input
         type="text"
         id="zoneName"
         placeholder="Zone Name (e.g., Immigration Gate)"
       />
       <button id="saveZone">💾 Save Zone</button>
+      <button id="loadZones">🔄 Reload Zones</button>
       <hr />
-      <button id="loadZones">🔄 Load Saved Zones</button>
       <p>
-        <small>Use polygon or circle tool to draw a zone, then save.</small>
+        <small>Draw polygon/circle → name it → save for selected level.</small>
       </p>
     </div>
+
+    <div id="legend"></div>
     <div id="map"></div>
 
     <script>
       let map,
         drawingManager,
         activeShape = null;
+      let currentLevel = "L1";
+      let levelColors = {
+        L1: "#2563eb", // blue
+        L2: "#16a34a", // green
+        L3: "#eab308", // amber
+      };
+      let drawnZones = {}; // {level: [polygon objects]}
 
+      // Initialize map
       function initMap() {
         map = new google.maps.Map(document.getElementById("map"), {
-          center: { lat: 25.2532, lng: 55.3657 }, // Dubai Airport
+          center: { lat: 25.2532, lng: 55.3657 },
           zoom: 17,
+          mapTypeId: google.maps.MapTypeId.SATELLITE,
         });
 
         drawingManager = new google.maps.drawing.DrawingManager({
@@ -81,13 +135,22 @@
             position: google.maps.ControlPosition.TOP_CENTER,
             drawingModes: ["polygon", "circle"],
           },
+          polygonOptions: {
+            fillColor: levelColors[currentLevel],
+            fillOpacity: 0.3,
+            strokeWeight: 2,
+            clickable: true,
+            editable: true,
+            zIndex: 1,
+          },
         });
+
         drawingManager.setMap(map);
 
         google.maps.event.addListener(
           drawingManager,
           "overlaycomplete",
-          (event) => {
+          function (event) {
             if (activeShape) activeShape.setMap(null);
             activeShape = event.overlay;
             drawingManager.setDrawingMode(null);
@@ -96,11 +159,53 @@
 
         document.getElementById("saveZone").onclick = saveZone;
         document.getElementById("loadZones").onclick = loadZones;
+        document.getElementById("levelSelect").onchange = onLevelChange;
+
+        renderLegend();
+        loadZones();
       }
 
+      // Render legend colors
+      function renderLegend() {
+        const legend = document.getElementById("legend");
+        legend.innerHTML = "<b>Legend</b><br>";
+
+        Object.entries(levelColors).forEach(([lvl, color]) => {
+          const div = document.createElement("div");
+          div.className = "legend-item";
+          div.innerHTML = `
+            <div class="legend-color" style="background:${color};"></div>
+            <span>${lvl.replace("L", "Level ")} ${
+            lvl === "L1"
+              ? "– Arrivals"
+              : lvl === "L2"
+              ? "– Departures"
+              : "– Customs"
+          }</span>`;
+          legend.appendChild(div);
+        });
+      }
+
+      // Level changed
+      function onLevelChange() {
+        currentLevel = document.getElementById("levelSelect").value;
+        drawingManager.setOptions({
+          polygonOptions: { fillColor: levelColors[currentLevel] },
+        });
+        showOnlyCurrentLevel();
+      }
+
+      // Hide all other levels, show only current one
+      function showOnlyCurrentLevel() {
+        for (const [level, zones] of Object.entries(drawnZones)) {
+          zones.forEach((z) => z.setMap(level === currentLevel ? map : null));
+        }
+      }
+
+      // Save zone
       async function saveZone() {
         if (!activeShape) {
-          alert("Please draw a zone first!");
+          alert("⚠️ Please draw a zone first!");
           return;
         }
 
@@ -111,7 +216,6 @@
         }
 
         let shapeType, coordinates;
-
         if (activeShape instanceof google.maps.Polygon) {
           shapeType = "polygon";
           coordinates = activeShape
@@ -136,54 +240,86 @@
           const res = await fetch("/api/zones/create/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, type: shapeType, coordinates }),
+            body: JSON.stringify({
+              name,
+              type: shapeType,
+              coordinates,
+              level: currentLevel,
+            }),
           });
+
           if (res.ok) {
-            alert("✅ Zone saved successfully!");
-            activeShape.setOptions({ fillColor: "#4f46e5", fillOpacity: 0.3 });
+            alert(`✅ Zone saved for ${currentLevel}`);
+            activeShape.setOptions({
+              fillColor: "#22c55e",
+              strokeColor: "#16a34a",
+              fillOpacity: 0.25,
+            });
+            activeShape = null;
+            loadZones();
           } else {
-            const text = await res.text();
-            alert("❌ Error saving zone: " + text);
+            alert("❌ Error saving zone.");
           }
         } catch (err) {
-          console.error("Save error:", err);
-          alert("❌ Could not save zone. Check backend connection.");
+          console.error(err);
+          alert("❌ Could not reach server.");
         }
       }
 
+      // Load all zones and only show current level
       async function loadZones() {
         try {
           const res = await fetch("/api/zones/");
-          const zones = await res.json();
+          const allLevels = await res.json();
 
-          Object.values(zones).forEach((zone) => {
-            if (zone.type === "polygon") {
-              new google.maps.Polygon({
-                paths: zone.coordinates,
-                strokeColor: "#22c55e",
-                strokeOpacity: 0.9,
-                strokeWeight: 2,
-                fillColor: "#22c55e",
-                fillOpacity: 0.2,
-                map,
-              });
-            } else if (zone.type === "circle") {
-              new google.maps.Circle({
-                center: zone.coordinates.center,
-                radius: zone.coordinates.radius,
-                strokeColor: "#22c55e",
-                strokeOpacity: 0.9,
-                strokeWeight: 2,
-                fillColor: "#22c55e",
-                fillOpacity: 0.2,
-                map,
-              });
-            }
+          // Clear old zones
+          for (const level in drawnZones) {
+            drawnZones[level].forEach((z) => z.setMap(null));
+          }
+          drawnZones = {};
+
+          Object.entries(allLevels).forEach(([level, zones]) => {
+            drawnZones[level] = [];
+
+            Object.values(zones).forEach((zone) => {
+              let shape;
+              if (zone.type === "polygon") {
+                shape = new google.maps.Polygon({
+                  paths: zone.coordinates,
+                  strokeColor: levelColors[level] || "#4f46e5",
+                  strokeOpacity: 0.9,
+                  strokeWeight: 2,
+                  fillColor: levelColors[level] || "#60a5fa",
+                  fillOpacity: 0.2,
+                  map: level === currentLevel ? map : null,
+                });
+                shape.addListener("click", (e) => {
+                  const info = new google.maps.InfoWindow({
+                    content: `<b>${zone.name}</b><br>Level: ${level}`,
+                    position: e.latLng,
+                  });
+                  info.open(map);
+                });
+              } else if (zone.type === "circle") {
+                shape = new google.maps.Circle({
+                  center: zone.coordinates.center,
+                  radius: zone.coordinates.radius,
+                  strokeColor: levelColors[level] || "#4f46e5",
+                  strokeOpacity: 0.9,
+                  strokeWeight: 2,
+                  fillColor: levelColors[level] || "#60a5fa",
+                  fillOpacity: 0.2,
+                  map: level === currentLevel ? map : null,
+                });
+              }
+              drawnZones[level].push(shape);
+            });
           });
 
-          alert("✅ Loaded " + Object.keys(zones).length + " zones");
+          showOnlyCurrentLevel();
         } catch (err) {
-          console.error("Load zones error:", err);
+          console.error(err);
+          alert("❌ Failed to load zones.");
         }
       }
 

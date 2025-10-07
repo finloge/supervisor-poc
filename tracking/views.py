@@ -1,121 +1,124 @@
+# tracking/views.py
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .storage import location_store, inspection_store, geofence_store, zone_store
 from django.shortcuts import render
+from .storage import inspection_store, zone_store
 
 
-class UpdateLocationView(APIView):
-    def post(self, request):
-        inspector_id = request.data.get("inspector_id")
-        latitude = request.data.get("latitude")
-        longitude = request.data.get("longitude")
+# -------------------------
+# HTML Page Views
+# -------------------------
 
-        # Validation
-        if not inspector_id or latitude is None or longitude is None:
-            return Response({"error": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            lat = float(latitude)
-            lon = float(longitude)
-        except ValueError:
-            return Response({"error": "Invalid coordinates"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Save in memory
-        location_store.update_location(inspector_id, lat, lon)
-        return Response({"message": "Location updated"}, status=status.HTTP_200_OK)
-
-
-class ListLocationsView(APIView):
-    def get(self, request):
-        return Response(location_store.get_all_locations(), status=status.HTTP_200_OK)
-    
-class InspectionListView(APIView):
-    def get(self, request):
-        return Response(inspection_store.get_all(), status=status.HTTP_200_OK)
-    
-class InspectionUpdateLocationView(APIView):
-    def post(self, request):
-        inspection_id = request.data.get("inspection_id")
-        lat = request.data.get("latitude")
-        lng = request.data.get("longitude")
-        radius = request.data.get("radius", 100)  # default 100m
-
-        if not inspection_id or lat is None or lng is None:
-            return Response({"error": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            lat = float(lat)
-            lng = float(lng)
-            radius = int(radius)
-        except ValueError:
-            return Response({"error": "Invalid coordinates"}, status=status.HTTP_400_BAD_REQUEST)
-
-        success = inspection_store.update_location(inspection_id, lat, lng)
-        if success:
-            inspection_store.inspections[inspection_id]["radius"] = radius
-            return Response({"message": "Inspection updated"}, status=status.HTTP_200_OK)
-        else:
-            return Response({"error": "Inspection not found"}, status=status.HTTP_404_NOT_FOUND)
-
-class GeofenceListView(APIView):
-    def get(self, request):
-        return Response(geofence_store.get_all(), status=status.HTTP_200_OK)
-    
-class InspectorAssignmentView(APIView):
-    def get(self, request, inspector_id):
-        data = inspection_store.inspections.get(inspector_id)
-        if not data:
-            return Response({"error": "Inspector not found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(data, status=status.HTTP_200_OK)
-
-def map_view(request):
+def supervisor_dashboard(request):
+    """Main supervisor interface for viewing/assigning inspectors."""
     return render(request, "supervisor.html")
 
-class ZoneListView(APIView):
+
+def map_designer(request):
+    """Map designer for defining zones per airport level."""
+    return render(request, "map.html")
+
+
+# -------------------------
+# Inspector APIs
+# -------------------------
+
+class InspectionListView(APIView):
+    """Returns list of inspectors and their assignments."""
+
     def get(self, request):
-        return Response(zone_store.get_all_zones(), status=status.HTTP_200_OK)
-    
+        data = inspection_store.get_all()
+        return Response(data, status=status.HTTP_200_OK)
+
+
+# -------------------------
+# Zone APIs
+# -------------------------
+
+class ZoneListView(APIView):
+    """Returns all zones for a given airport level."""
+
+    def get(self, request):
+        level = request.GET.get("level")
+        zones = zone_store.get_all_zones(level)
+        return Response(zones, status=status.HTTP_200_OK)
+
+
 class ZoneCreateView(APIView):
+    """Create a new zone polygon or circle on a level."""
+
     def post(self, request):
         name = request.data.get("name")
         coords = request.data.get("coordinates")
+        zone_type = request.data.get("type", "polygon")
+        level = request.data.get("level", "L1")
 
         if not name or not coords:
-            return Response({"error": "Missing name or coordinates"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Missing name or coordinates"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        new_id = str(len(zone_store.zones) + 1)
-        zone_store.zones[new_id] = {
-            "name": name,
-            "type": "polygon",
-            "coordinates": coords,
-        }
+        level_zones = zone_store.get_all_zones(level)
+        new_id = str(len(level_zones) + 1)
 
-        return Response({"message": "Zone saved", "zone": zone_store.zones[new_id]}, status=status.HTTP_201_CREATED)
-    
-def map_designer(request):
-    return render(request, "map.html")
+        zone_store.add_zone(
+            level,
+            new_id,
+            {"name": name, "type": zone_type, "coordinates": coords},
+        )
 
-class ZoneAssignmentsListView(APIView):
-    def get(self, request):
-        assignments = zone_store.get_assignments()
-        detailed = {}
-        for zone_id, inspector_id in assignments.items():
-            zone = zone_store.zones.get(zone_id)
-            if zone:
-                detailed[inspector_id] = zone["name"]
-        return Response(detailed, status=status.HTTP_200_OK)
-    
+        return Response(
+            {
+                "message": f"Zone '{name}' created on {level}",
+                "zone": zone_store.levels[level][new_id],
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class ZoneAssignView(APIView):
+    """Assigns an inspector to a zone on a specific level."""
+
     def post(self, request):
+        level = request.data.get("level", "L1")
         zone_id = request.data.get("zone_id")
         inspector_id = request.data.get("inspector_id")
 
         if not zone_id or not inspector_id:
-            return Response({"error": "Missing zone_id or inspector_id"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Missing zone_id or inspector_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        success = zone_store.assign_inspector(zone_id, inspector_id)
+        success = zone_store.assign_inspector(level, zone_id, inspector_id)
         if success:
-            return Response({"message": "Inspector assigned successfully"}, status=status.HTTP_200_OK)
-        else:
-            return Response({"error": "Zone not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"message": f"Inspector {inspector_id} assigned to zone {zone_id}"},
+                status=status.HTTP_200_OK,
+            )
+        return Response({"error": "Zone not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class ZoneAssignmentsListView(APIView):
+    def get(self, request):
+        output = []
+
+        for level, zones in zone_store.levels.items():
+            level_assignments = zone_store.get_assignments(level)
+
+            for zone_id, inspector_list in level_assignments.items():
+                zone = zones.get(zone_id)
+                if not zone:
+                    continue
+
+                for inspector_id in inspector_list:
+                    output.append({
+                        "inspector_id": inspector_id,
+                        "level": level,
+                        "zone_id": zone_id,
+                        "zone_name": zone["name"],
+                    })
+
+        return Response(output, status=status.HTTP_200_OK)

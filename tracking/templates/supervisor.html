@@ -2,7 +2,8 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Supervisor Dashboard - Zone Assignment</title>
+    <title>Supervisor Dashboard – Multi-Level Airport Control</title>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE"></script>
     <style>
       body {
         margin: 0;
@@ -12,13 +13,25 @@
         display: flex;
         height: 100vh;
       }
-      /* Sidebar */
+      #map {
+        flex: 1;
+      }
       #sidebar {
-        width: 280px;
+        width: 300px;
         border-left: 1px solid #ddd;
-        padding: 10px;
+        padding: 12px;
         overflow-y: auto;
-        background: #f9f9f9;
+        background: #f9fafb;
+      }
+      h3 {
+        margin-top: 0;
+      }
+      select {
+        width: 100%;
+        padding: 6px;
+        margin-bottom: 10px;
+        border-radius: 5px;
+        border: 1px solid #ccc;
       }
       .inspector-card {
         display: flex;
@@ -27,8 +40,9 @@
         border-radius: 8px;
         padding: 8px;
         margin-bottom: 8px;
-        background: white;
+        background: #fff;
         cursor: pointer;
+        transition: all 0.2s;
       }
       .inspector-card.active {
         background: #eef2ff;
@@ -38,18 +52,6 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-      }
-      .inspector-info {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .avatar {
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        background-size: cover;
-        background-position: center;
       }
       .status {
         font-size: 12px;
@@ -75,31 +77,76 @@
         margin-top: 6px;
         text-align: center;
       }
-      #map {
-        flex: 1;
+      #legend {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: #fff;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        z-index: 5;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+      .legend-color {
+        width: 20px;
+        height: 20px;
+        margin-right: 8px;
+        border-radius: 3px;
       }
     </style>
-
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsVTuXH5BE2bNMenRRpdR-O2RAVz13dTE"></script>
   </head>
 
   <body>
     <div class="layout">
       <div id="map"></div>
       <div id="sidebar">
-        <h3>Inspectors</h3>
+        <h3>Supervisor Dashboard</h3>
+        <label>Select Level:</label>
+        <select id="levelSelect">
+          <option value="L1">Level 1 – Arrivals</option>
+          <option value="L2">Level 2 – Departures</option>
+          <option value="L3">Level 3 – Customs</option>
+        </select>
+        <h4>Inspectors</h4>
         <div id="inspector-list"></div>
       </div>
     </div>
 
+    <div id="legend"></div>
+
     <script>
       let map, infoWindow;
+      let zonesDrawn = {};
+      let zoneCenters = {};
+      let zoneAssignments = {}; // { zone_id: [inspector_names...] }
       let markers = {};
-      let circles = {};
-      let zones = {};
-      let zoneData = {};
       let activeInspector = null;
-      let zoneAssignments = {};
+      let currentLevel = "L1";
+
+      const levelColors = { L1: "#2563eb", L2: "#16a34a", L3: "#eab308" };
+
+      function renderLegend() {
+        const legend = document.getElementById("legend");
+        legend.innerHTML = "<b>Legend</b><br>";
+        Object.entries(levelColors).forEach(([lvl, color]) => {
+          const div = document.createElement("div");
+          div.className = "legend-item";
+          div.innerHTML = `<div class="legend-color" style="background:${color};"></div>
+                           <span>${lvl.replace("L", "Level ")} ${
+            lvl === "L1"
+              ? "– Arrivals"
+              : lvl === "L2"
+              ? "– Departures"
+              : "– Customs"
+          }</span>`;
+          legend.appendChild(div);
+        });
+      }
 
       async function initMap() {
         map = new google.maps.Map(document.getElementById("map"), {
@@ -108,222 +155,76 @@
           mapTypeId: google.maps.MapTypeId.SATELLITE,
         });
         infoWindow = new google.maps.InfoWindow();
+        renderLegend();
 
-        await loadZones();
-        await loadZoneAssignments();
-        await loadInspectors();
+        await reloadAll();
+
+        document.getElementById("levelSelect").onchange = async () => {
+          currentLevel = document.getElementById("levelSelect").value;
+          await reloadAll();
+        };
       }
 
-      /** Fetch current zone assignments */
-      async function loadZoneAssignments() {
-        const res = await fetch("/api/zone-assignments/");
-        zoneAssignments = await res.json();
+      async function reloadAll() {
+        const inspectors = await loadInspectors();
+        await loadZonesForLevel(currentLevel);
+        await loadAssignments();
+        drawZoneMarkers();
+        fillInspectorSidebar(inspectors);
       }
 
-      /** Load inspectors into sidebar */
       async function loadInspectors() {
         const res = await fetch("/api/inspections/");
-        const data = await res.json();
-        const list = document.getElementById("inspector-list");
-        list.innerHTML = "";
-
-        for (const [id, ins] of Object.entries(data)) {
-          const assignedZone = zoneAssignments[id] || null;
-          const card = document.createElement("div");
-          card.className = "inspector-card";
-          card.dataset.id = id;
-          card.innerHTML = `
-            <div class="inspector-header">
-              <div class="inspector-info">
-                <div class="avatar" style="background-image:url('https://i.pravatar.cc/150?u=${id}')"></div>
-                <div>
-                  <div><strong>${ins.title}</strong></div>
-                  <small>ID: ${id}</small>
-                </div>
-              </div>
-              <span class="status ${ins.lat ? "assigned" : "unassigned"}">
-                ${ins.lat ? "Assigned" : "Unassigned"}
-              </span>
-            </div>
-            <div class="zone-name">
-              ${assignedZone ? "📍 " + assignedZone : "— No Zone Assigned —"}
-            </div>
-          `;
-
-          card.onclick = () =>
-            selectInspector(
-              id,
-              ins.title,
-              `https://i.pravatar.cc/150?u=${id}`,
-              ins.radius || 100,
-              card
-            );
-          list.appendChild(card);
-
-          // Place assigned marker if inspector has location
-          if (ins.lat && ins.lng) {
-            upsertMarker(
-              id,
-              ins.title,
-              ins.lat,
-              ins.lng,
-              `https://i.pravatar.cc/150?u=${id}`,
-              ins.radius || 100
-            );
-          }
-        }
+        return await res.json();
       }
 
-      /** Load all zones and make clickable */
-      async function loadZones() {
-        const res = await fetch("/api/zones/");
-        zoneData = await res.json();
+      async function loadAssignments() {
+        const res = await fetch("/api/zone-assignments/");
+        const data = await res.json();
+        // Convert to per-zone grouping
+        zoneAssignments = {};
+        data.forEach((a) => {
+          if (a.level !== currentLevel) return;
+          if (!zoneAssignments[a.zone_id]) zoneAssignments[a.zone_id] = [];
+          zoneAssignments[a.zone_id].push(a.inspector_id);
+        });
+      }
 
-        for (const [id, zone] of Object.entries(zoneData)) {
+      async function loadZonesForLevel(level) {
+        // Clear old zones
+        Object.values(zonesDrawn).forEach((z) => z.setMap(null));
+        zonesDrawn = {};
+        zoneCenters = {};
+
+        const res = await fetch(`/api/zones/?level=${level}`);
+        const zones = await res.json();
+
+        for (const [zoneId, zone] of Object.entries(zones)) {
           const polygon = new google.maps.Polygon({
             paths: zone.coordinates,
-            strokeColor: "#4f46e5",
+            strokeColor: levelColors[level],
             strokeOpacity: 0.9,
             strokeWeight: 2,
-            fillColor: "#818cf8",
+            fillColor: levelColors[level],
             fillOpacity: 0.15,
             map,
           });
-
-          zones[id] = polygon;
+          zonesDrawn[zoneId] = polygon;
+          zoneCenters[zoneId] = getPolygonCenter(zone.coordinates);
 
           polygon.addListener("click", async (e) => {
             if (activeInspector) {
-              const center = getPolygonCenter(zone.coordinates);
-              await assignInspectorToZone(
-                activeInspector.id,
-                id,
-                center.lat,
-                center.lng
-              );
+              await assignInspectorToZone(activeInspector.id, zoneId);
               clearActive();
-              highlightZone(polygon, "#22c55e");
-              await loadZoneAssignments();
-              await loadInspectors();
+              polygon.setOptions({ fillColor: "#22c55e" });
+              await reloadAll();
             } else {
-              infoWindow.setContent(`<b>${zone.name}</b>`);
+              showZoneInfo(zoneId, zone.name);
               infoWindow.setPosition(e.latLng);
               infoWindow.open(map);
             }
           });
-
-          polygon.addListener("mouseover", () =>
-            polygon.setOptions({ fillColor: "#a5b4fc" })
-          );
-          polygon.addListener("mouseout", () =>
-            polygon.setOptions({ fillColor: "#818cf8" })
-          );
         }
-      }
-
-      function selectInspector(id, name, avatar, radius, cardEl) {
-        document
-          .querySelectorAll(".inspector-card")
-          .forEach((c) => c.classList.remove("active"));
-        cardEl.classList.add("active");
-        activeInspector = { id, name, avatar, radius };
-      }
-
-      function clearActive() {
-        activeInspector = null;
-        document
-          .querySelectorAll(".inspector-card")
-          .forEach((c) => c.classList.remove("active"));
-      }
-
-      async function assignInspectorToZone(inspectorId, zoneId, lat, lng) {
-        try {
-          await fetch("/api/zone-assign/", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              zone_id: zoneId,
-              inspector_id: inspectorId,
-            }),
-          });
-
-          await fetch("/api/inspection-update/", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              inspection_id: inspectorId,
-              latitude: lat,
-              longitude: lng,
-              radius: 100,
-            }),
-          });
-
-          upsertMarker(
-            inspectorId,
-            "Inspector",
-            lat,
-            lng,
-            `https://i.pravatar.cc/150?u=${inspectorId}`,
-            100
-          );
-          alert("✅ Inspector assigned to zone successfully!");
-        } catch (err) {
-          console.error(err);
-          alert("❌ Error assigning inspector.");
-        }
-      }
-
-      function upsertMarker(id, name, lat, lng, avatar, radius) {
-        if (!markers[id]) {
-          const m = new google.maps.Marker({
-            position: { lat, lng },
-            map,
-            draggable: true,
-            icon: {
-              url: `https://i.pravatar.cc/40?u=${id}`,
-              scaledSize: new google.maps.Size(40, 40),
-            },
-          });
-          m.addListener("dragend", (e) => {
-            saveAndPlace(
-              id,
-              name,
-              e.latLng.lat(),
-              e.latLng.lng(),
-              avatar,
-              radius
-            );
-          });
-          markers[id] = m;
-        } else {
-          markers[id].setPosition({ lat, lng });
-        }
-
-        if (circles[id]) circles[id].setMap(null);
-        circles[id] = new google.maps.Circle({
-          strokeColor: "#4f46e5",
-          strokeOpacity: 0.8,
-          strokeWeight: 2,
-          fillColor: "#6366f1",
-          fillOpacity: 0.1,
-          map,
-          center: { lat, lng },
-          radius,
-        });
-      }
-
-      async function saveAndPlace(id, name, lat, lng, avatar, radius) {
-        await fetch("/api/inspection-update/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            inspection_id: id,
-            latitude: lat,
-            longitude: lng,
-            radius,
-          }),
-        });
-        upsertMarker(id, name, lat, lng, avatar, radius);
       }
 
       function getPolygonCenter(coords) {
@@ -333,14 +234,110 @@
           latSum += c.lat;
           lngSum += c.lng;
         });
-        return {
-          lat: latSum / coords.length,
-          lng: lngSum / coords.length,
-        };
+        return { lat: latSum / coords.length, lng: lngSum / coords.length };
       }
 
-      function highlightZone(zone, color) {
-        zone.setOptions({ fillColor: color, fillOpacity: 0.25 });
+      function drawZoneMarkers() {
+        // Clear old markers
+        Object.values(markers).forEach((m) => m.setMap(null));
+        markers = {};
+
+        for (const [zoneId, center] of Object.entries(zoneCenters)) {
+          const assigned = zoneAssignments[zoneId] || [];
+          const marker = new google.maps.Marker({
+            position: center,
+            map,
+            title: `Zone ${zoneId}`,
+            label: { text: `Z${zoneId}`, color: "#000", fontWeight: "bold" },
+          });
+
+          marker.addListener("click", () => {
+            showZoneInfo(zoneId);
+            infoWindow.setPosition(center);
+            infoWindow.open(map, marker);
+          });
+
+          markers[zoneId] = marker;
+        }
+      }
+
+      function showZoneInfo(zoneId, zoneName) {
+        const assigned = zoneAssignments[zoneId] || [];
+        const inspectorsList = assigned.length
+          ? assigned.map((id) => `<li>${id}</li>`).join("")
+          : "<li>No inspectors assigned</li>";
+
+        const content = `
+          <div>
+            <b>${zoneName || "Zone " + zoneId}</b><br>
+            <b>Inspectors:</b>
+            <ul style="margin:5px 0 0 15px;">${inspectorsList}</ul>
+          </div>
+        `;
+        infoWindow.setContent(content);
+      }
+
+      async function assignInspectorToZone(inspectorId, zoneId) {
+        try {
+          await fetch("/api/zone-assign/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              level: currentLevel,
+              zone_id: zoneId,
+              inspector_id: inspectorId,
+            }),
+          });
+          alert("✅ Inspector assigned successfully!");
+        } catch (err) {
+          console.error(err);
+          alert("❌ Assignment failed.");
+        }
+      }
+
+      async function fillInspectorSidebar(inspectors) {
+        const list = document.getElementById("inspector-list");
+        list.innerHTML = "";
+        for (const [id, ins] of Object.entries(inspectors)) {
+          let zoneText = "— No Zone Assigned —";
+          for (const [zoneId, inspList] of Object.entries(zoneAssignments)) {
+            if (inspList.includes(id)) {
+              zoneText = `📍 Zone ${zoneId}`;
+              break;
+            }
+          }
+
+          const card = document.createElement("div");
+          card.className = "inspector-card";
+          card.innerHTML = `
+            <div class="inspector-header">
+              <div><strong>${
+                ins.title
+              }</strong> <small>(ID: ${id})</small></div>
+              <span class="status ${
+                zoneText.includes("Zone") ? "assigned" : "unassigned"
+              }">
+                ${zoneText.includes("Zone") ? "Assigned" : "Unassigned"}
+              </span>
+            </div>
+            <div class="zone-name">${zoneText}</div>
+          `;
+          card.onclick = () => {
+            document
+              .querySelectorAll(".inspector-card")
+              .forEach((c) => c.classList.remove("active"));
+            card.classList.add("active");
+            activeInspector = { id, name: ins.title };
+          };
+          list.appendChild(card);
+        }
+      }
+
+      function clearActive() {
+        activeInspector = null;
+        document
+          .querySelectorAll(".inspector-card")
+          .forEach((c) => c.classList.remove("active"));
       }
 
       window.onload = initMap;
